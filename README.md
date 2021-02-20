@@ -108,7 +108,7 @@ apt update && apt install gcc
 
 Clone & Build:
 ```sh
-git clone https://github.com/eycorsican/leaf.git
+git clone https://github.com/monnerHenster/leaf.git
 cd leaf
 git submodule init
 git submodule update
