@@ -56,6 +56,7 @@ pub struct Proxy {
     pub ws: Option<bool>,
     pub tls: Option<bool>,
     pub ws_path: Option<String>,
+    pub ws_host: Option<String>,
 
     // trojan
     pub sni: Option<String>,
@@ -75,6 +76,7 @@ impl Default for Proxy {
             ws: Some(false),
             tls: Some(false),
             ws_path: None,
+            ws_host: None,
             sni: None,
         }
     }
@@ -133,6 +135,7 @@ pub struct Config {
     pub proxy: Option<Vec<Proxy>>,
     pub proxy_group: Option<Vec<ProxyGroup>>,
     pub rule: Option<Vec<Rule>>,
+    pub host: Option<HashMap<String, Vec<String>>>,
 }
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
@@ -325,6 +328,9 @@ pub fn from_lines(lines: Vec<io::Result<String>>) -> Result<Config> {
                 "tls" => proxy.tls = if v == "true" { Some(true) } else { Some(false) },
                 "ws-path" => {
                     proxy.ws_path = Some(v.to_string());
+                }
+                "ws-host" => {
+                    proxy.ws_host = Some(v.to_string());
                 }
                 "sni" => {
                     proxy.sni = Some(v.to_string());
@@ -553,11 +559,28 @@ pub fn from_lines(lines: Vec<io::Result<String>>) -> Result<Config> {
         rules.push(rule);
     }
 
+    let mut hosts = HashMap::new();
+    let host_lines = get_lines_by_section("Host", lines.iter()).unwrap();
+    for line in host_lines {
+        let parts: Vec<&str> = line.split('=').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+        let name = parts[0].trim();
+        let ips: Vec<String> = parts[1]
+            .trim()
+            .split(',')
+            .map(|x| x.trim().to_owned())
+            .collect();
+        hosts.insert(name.to_owned(), ips);
+    }
+
     let mut config = Config::default();
     config.general = Some(general);
     config.proxy = Some(proxies);
     config.proxy_group = Some(proxy_groups);
     config.rule = Some(rules);
+    config.host = Some(hosts);
 
     Ok(config)
 }
@@ -729,6 +752,11 @@ pub fn to_internal(conf: Config) -> Result<internal::Config> {
                     } else {
                         ws_settings.path = "/".to_string();
                     }
+                    if let Some(ext_ws_host) = &ext_proxy.ws_host {
+                        let mut headers = HashMap::new();
+                        headers.insert("Host".to_string(), ext_ws_host.clone());
+                        ws_settings.headers = headers;
+                    }
                     let ws_settings = ws_settings.write_to_bytes().unwrap();
                     ws_outbound.settings = ws_settings;
                     ws_outbound.tag = format!("{}_ws_xxx", ext_proxy.tag.clone());
@@ -793,6 +821,11 @@ pub fn to_internal(conf: Config) -> Result<internal::Config> {
                         ws_settings.path = ext_ws_path.clone();
                     } else {
                         ws_settings.path = "/".to_string();
+                    }
+                    if let Some(ext_ws_host) = &ext_proxy.ws_host {
+                        let mut headers = HashMap::new();
+                        headers.insert("Host".to_string(), ext_ws_host.clone());
+                        ws_settings.headers = headers;
                     }
                     let ws_settings = ws_settings.write_to_bytes().unwrap();
                     ws_outbound.settings = ws_settings;
@@ -873,6 +906,11 @@ pub fn to_internal(conf: Config) -> Result<internal::Config> {
                         ws_settings.path = ext_ws_path.clone();
                     } else {
                         ws_settings.path = "/".to_string();
+                    }
+                    if let Some(ext_ws_host) = &ext_proxy.ws_host {
+                        let mut headers = HashMap::new();
+                        headers.insert("Host".to_string(), ext_ws_host.clone());
+                        ws_settings.headers = headers;
                     }
                     let ws_settings = ws_settings.write_to_bytes().unwrap();
                     ws_outbound.settings = ws_settings;
@@ -1116,6 +1154,7 @@ pub fn to_internal(conf: Config) -> Result<internal::Config> {
 
     let mut dns = internal::DNS::new();
     let mut servers = protobuf::RepeatedField::new();
+    let mut hosts = HashMap::new();
     if let Some(ext_general) = &conf.general {
         if let Some(ext_dns_interface) = &ext_general.dns_interface {
             dns.bind = ext_dns_interface.clone();
@@ -1132,6 +1171,20 @@ pub fn to_internal(conf: Config) -> Result<internal::Config> {
             }
             dns.servers = servers;
         }
+    }
+    if let Some(ext_hosts) = &conf.host {
+        for (name, static_ips) in ext_hosts.iter() {
+            let mut ips = internal::DNS_IPs::new();
+            let mut ip_vals = protobuf::RepeatedField::new();
+            for ip in static_ips {
+                ip_vals.push(ip.to_owned());
+            }
+            ips.values = ip_vals;
+            hosts.insert(name.to_owned(), ips);
+        }
+    }
+    if hosts.len() > 0 {
+        dns.hosts = hosts;
     }
 
     let mut config = internal::Config::new();
